@@ -1,0 +1,136 @@
+# ci.yml
+# GitHub Actions CI for TaskFlow iOS
+#
+# Triggers on every push to main/develop and on all PRs targeting main.
+# Jobs:
+#   1. lint     — SwiftLint (fast feedback, no simulator needed)
+#   2. build    — xcodegen + xcodebuild compile
+#   3. test     — unit tests on iPhone 15 Pro simulator
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XCODE_VERSION: "15.4"
+  SIMULATOR_DEVICE: "iPhone 15 Pro"
+  SIMULATOR_OS: "17.5"
+  SCHEME: "TaskFlow"
+  DERIVED_DATA_PATH: "DerivedData"
+
+jobs:
+
+  # ─────────────────────────────────────────────────
+  # Job 1: SwiftLint
+  # ─────────────────────────────────────────────────
+  lint:
+    name: SwiftLint
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint
+        run: swiftlint lint --reporter github-actions-logging
+
+  # ─────────────────────────────────────────────────
+  # Job 2: Build
+  # ─────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: macos-14
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DERIVED_DATA_PATH }}
+          key: ${{ runner.os }}-derived-${{ hashFiles('project.yml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-derived-${{ hashFiles('project.yml') }}-
+
+      - name: Build (Release)
+        run: |
+          xcodebuild build \
+            -scheme "${{ env.SCHEME }}" \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "${{ env.DERIVED_DATA_PATH }}" \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
+
+      - name: Upload build artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ${{ env.DERIVED_DATA_PATH }}/Logs/Build/
+
+  # ─────────────────────────────────────────────────
+  # Job 3: Unit Tests
+  # ─────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: macos-14
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+
+      - name: Install XcodeGen + xcbeautify
+        run: brew install xcodegen xcbeautify
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Restore DerivedData cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DERIVED_DATA_PATH }}
+          key: ${{ runner.os }}-derived-${{ hashFiles('project.yml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-derived-${{ hashFiles('project.yml') }}-
+
+      - name: Run unit tests
+        run: |
+          xcodebuild test \
+            -scheme "${{ env.SCHEME }}" \
+            -destination "platform=iOS Simulator,name=${{ env.SIMULATOR_DEVICE }},OS=${{ env.SIMULATOR_OS }}" \
+            -derivedDataPath "${{ env.DERIVED_DATA_PATH }}" \
+            -only-testing:TaskFlowTests \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults.xcresult
