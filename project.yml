@@ -58,6 +58,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSFaceIDUsageDescription: "TaskFlow uses Face ID to protect your task data."
+        NSMicrophoneUsageDescription: "TaskFlow uses the microphone to transcribe task titles by voice."
+        NSSpeechRecognitionUsageDescription: "TaskFlow uses speech recognition to convert your voice into task titles."
         ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: TaskFlow/TaskFlow.entitlements

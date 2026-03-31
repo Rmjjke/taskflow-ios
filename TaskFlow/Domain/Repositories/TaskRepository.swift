@@ -160,11 +160,12 @@ final class TaskRepository: TaskRepositoryProtocol {
 
     func purgeExpiredTrash() throws {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
-        let predicate = #Predicate<TaskItem> {
-            $0.isDeleted == true && $0.deletedAt != nil && $0.deletedAt! < cutoff
-        }
+        // SwiftData #Predicate does not support force-unwrap or nil-coalescing on
+        // Optional properties, so we fetch all soft-deleted items and filter in-memory.
+        let predicate = #Predicate<TaskItem> { $0.isDeleted == true }
         let descriptor = FetchDescriptor<TaskItem>(predicate: predicate)
-        let expired = try modelContext.fetch(descriptor)
+        let trashed = try modelContext.fetch(descriptor)
+        let expired = trashed.filter { ($0.deletedAt ?? Date()) < cutoff }
         expired.forEach { modelContext.delete($0) }
         if !expired.isEmpty {
             try modelContext.save()

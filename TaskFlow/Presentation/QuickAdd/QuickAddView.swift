@@ -6,6 +6,7 @@
 //       US-02 — Due Date inline picker (AC-02.1 – AC-02.4)
 
 import SwiftUI
+import UIKit
 
 struct QuickAddView: View {
 
@@ -14,10 +15,14 @@ struct QuickAddView: View {
     @State var viewModel: QuickAddViewModel
     @Environment(\.dismiss) private var dismiss
 
-    // MARK: - Focus
+    // MARK: - Focus & Sheet State
 
     /// Auto-focused on sheet appear — keyboard opens immediately (AC-01.1).
     @FocusState private var isTitleFocused: Bool
+
+    /// Tracks the active detent so we can programmatically drive it to .large
+    /// when the calendar opens — ensuring the Add button is always visible.
+    @State private var selectedDetent: PresentationDetent = .height(260)
 
     // MARK: - Body
 
@@ -49,29 +54,62 @@ struct QuickAddView: View {
             .navigationBarBackButtonHidden()
             .toolbar { cancelButton }
         }
-        // Base height 260pt; expand to .medium when pickers are open (AC-01.5 inline expansion).
-        .presentationDetents(currentDetents)
+        // Detent set drives which stops are available; selectedDetent drives the actual position.
+        .presentationDetents(currentDetents, selection: $selectedDetent)
         .presentationDragIndicator(.visible)
         // Prevent accidental swipe-dismiss when user has typed a title (AC-01.4).
         .interactiveDismissDisabled(viewModel.isDirty)
         .onAppear { isTitleFocused = true }
         .animation(.easeInOut(duration: 0.25), value: viewModel.isDatePickerExpanded)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isPriorityPickerExpanded)
+        // Auto-expand to .large when calendar opens so the Add button is never hidden.
+        .onChange(of: viewModel.isDatePickerExpanded) { _, expanded in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                selectedDetent = expanded ? .large : .height(260)
+            }
+        }
+        // Priority picker only needs .medium.
+        .onChange(of: viewModel.isPriorityPickerExpanded) { _, expanded in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                if expanded && !viewModel.isDatePickerExpanded {
+                    selectedDetent = .medium
+                } else if !expanded && !viewModel.isDatePickerExpanded {
+                    selectedDetent = .height(260)
+                }
+            }
+        }
         .confirmationDialog(
             "Discard task?",
             isPresented: $viewModel.showDiscardConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Discard", role: .destructive) { dismiss() }
+            Button("Discard", role: .destructive) {
+                viewModel.speech.stopRecording()
+                dismiss()
+            }
             Button("Keep Editing", role: .cancel) { }
         }
+        // Microphone permission denied alert
+        .alert("Microphone Access Required", isPresented: $viewModel.showMicPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("To dictate task titles, allow microphone access in Settings → Privacy → Microphone.")
+        }
+        .onDisappear { viewModel.speech.stopRecording() }
     }
 
     // MARK: - Dynamic Detents
 
-    /// Small when pickers are closed, medium when any picker is open.
     private var currentDetents: Set<PresentationDetent> {
-        if viewModel.isDatePickerExpanded || viewModel.isPriorityPickerExpanded {
+        if viewModel.isDatePickerExpanded {
+            return [.large]            // calendar needs full height
+        }
+        if viewModel.isPriorityPickerExpanded {
             return [.medium, .large]
         }
         return [.height(260)]
@@ -156,6 +194,11 @@ struct QuickAddView: View {
             ) { }
             .disabled(true)
             .opacity(0.35)
+
+            // ── Dictation mic ───────────────────────────────────────────────
+            DictationButton(isRecording: viewModel.speech.isRecording) {
+                viewModel.toggleDictation()
+            }
 
             Spacer()
 
@@ -342,6 +385,43 @@ private struct ToolbarIconButton: View {
                 .frame(width: 36, height: 36)
         }
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+/// Mic button that pulses red while recording (dictation active state).
+private struct DictationButton: View {
+    let isRecording: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if isRecording {
+                    Circle()
+                        .fill(Color.red.opacity(0.15))
+                        .frame(width: 32, height: 32)
+                }
+                Image(systemName: isRecording ? "mic.fill" : "mic")
+                    .foregroundStyle(isRecording ? .red : Color.secondary)
+                    .font(.title3)
+            }
+            .frame(width: 36, height: 36)
+        }
+        .accessibilityLabel(isRecording ? "Stop dictation" : "Dictate task title")
+        // Subtle pulse ring when recording
+        .overlay {
+            if isRecording {
+                Circle()
+                    .stroke(Color.red.opacity(0.4), lineWidth: 1.5)
+                    .frame(width: 32, height: 32)
+                    .scaleEffect(isRecording ? 1.3 : 1.0)
+                    .opacity(isRecording ? 0 : 1)
+                    .animation(
+                        .easeOut(duration: 0.8).repeatForever(autoreverses: false),
+                        value: isRecording
+                    )
+            }
+        }
     }
 }
 
