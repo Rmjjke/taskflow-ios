@@ -1,14 +1,14 @@
 // InboxViewModel.swift
 // TaskFlow — Presentation Layer
 //
-// Drives the InboxView. Owns all business logic for the Inbox screen:
-// task list state, completion, deletion, and undo flows.
+// Drives the InboxView. Single source of business logic for:
+// task list state, completion, deletion, undo, and toast flow.
 //
-// Architecture: MVVM — ViewModel is @Observable so SwiftUI auto-tracks
-// property reads for minimal re-renders.
+// Architecture: @Observable ViewModel on @MainActor.
 
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 @MainActor
@@ -16,32 +16,34 @@ final class InboxViewModel {
 
     // MARK: - Dependencies
 
-    private let repository: TaskRepositoryProtocol
+    /// Internal so InboxView can pass it to child ViewModels (QuickAdd, TaskDetail).
+    let repository: TaskRepositoryProtocol
 
     // MARK: - Published State
 
     /// Active (non-deleted, non-completed) tasks shown in the main list.
     private(set) var activeTasks: [TaskItem] = []
 
-    /// Completed tasks shown in the collapsible "Completed" section.
+    /// Completed tasks shown in the collapsible "Completed" section (AC-03.3).
     private(set) var completedTasks: [TaskItem] = []
 
-    /// Controls whether the Quick-Add sheet is presented.
+    /// IDs of tasks that have been completed but are still rendering in the
+    /// active list during the 400ms "stay" delay (AC-03.2).
+    private(set) var pendingCompletionIds: Set<UUID> = []
+
     var isShowingQuickAdd: Bool = false
-
-    /// Controls whether the Completed section is expanded.
     var isCompletedSectionExpanded: Bool = false
-
-    /// Controls whether the Settings sheet is presented.
     var isShowingSettings: Bool = false
 
-    /// Toast message displayed after complete or delete actions.
+    /// Toast shown after complete / delete (AC-03.4, AC-04.3).
     var toastMessage: ToastMessage? = nil
 
-    /// Error surfaced to the view (e.g., persistence failure).
+    /// Task awaiting a notes-confirmation before deletion (AC-04.1).
+    var taskPendingDeleteConfirmation: TaskItem? = nil
+
     var errorMessage: String? = nil
 
-    // MARK: - Undo State (internal)
+    // MARK: - Undo References
 
     private var lastCompletedTaskId: UUID? = nil
     private var lastDeletedTaskId: UUID? = nil
@@ -55,7 +57,6 @@ final class InboxViewModel {
 
     // MARK: - Lifecycle
 
-    /// Called when the view appears. Loads tasks and runs trash maintenance.
     func onAppear() {
         loadTasks()
         runMaintenanceTasks()
@@ -66,22 +67,49 @@ final class InboxViewModel {
     func loadTasks() {
         do {
             let all = try repository.fetchActive()
-            activeTasks   = all.filter { !$0.isCompleted }
-            completedTasks = all.filter { $0.isCompleted }
-                                .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
+            // Rebuild active list — keep tasks in pendingCompletionIds visible
+            // so the stay-delay animation can run to completion (AC-03.2).
+            let active = all.filter { !$0.isCompleted || pendingCompletionIds.contains($0.id) }
+            activeTasks = active
+
+            completedTasks = all
+                .filter { $0.isCompleted && !pendingCompletionIds.contains($0.id) }
+                .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
         } catch {
             errorMessage = "Failed to load tasks."
         }
     }
 
-    // MARK: - Task Completion (US-03)
+    // MARK: - US-03: Complete a Task
 
     func completeTask(id: UUID) {
         do {
             try repository.complete(id: id)
             lastCompletedTaskId = id
+
+            // Fire haptic immediately on completion (AC-03.2).
+            HapticManager.success()
+
+            // Phase 1 — mark as pending so the row stays visible with
+            // strikethrough for 400ms before disappearing (AC-03.2).
+            pendingCompletionIds.insert(id)
             loadTasks()
-            showToast(.init(message: "Task completed.", actionLabel: "Undo", action: undoComplete))
+
+            // Phase 2 — after 400ms remove the pending ID → triggers
+            // SwiftUI to animate the row out of activeTasks (600ms total).
+            _Concurrency.Task { [weak self] in
+                try? await _Concurrency.Task.sleep(for: .milliseconds(400))
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self?.pendingCompletionIds.remove(id)
+                    self?.loadTasks()
+                }
+            }
+
+            showToast(ToastMessage(
+                message: "Task completed.",
+                actionLabel: "Undo",
+                action: { [weak self] in self?.undoComplete() }
+            ))
         } catch {
             errorMessage = "Could not complete task."
         }
@@ -92,6 +120,8 @@ final class InboxViewModel {
         do {
             try repository.uncomplete(id: id)
             lastCompletedTaskId = nil
+            // Cancel any pending animation for this task.
+            pendingCompletionIds.remove(id)
             loadTasks()
             dismissToast()
         } catch {
@@ -99,14 +129,40 @@ final class InboxViewModel {
         }
     }
 
-    // MARK: - Task Deletion (US-04)
+    // MARK: - US-04: Delete a Task
 
-    func deleteTask(id: UUID) {
+    /// Entry point from swipe-left action.
+    /// If the task has notes, sets `taskPendingDeleteConfirmation` so
+    /// InboxView can show a confirmation alert (AC-04.1).
+    func requestDelete(task: TaskItem) {
+        if task.hasNotes {
+            taskPendingDeleteConfirmation = task
+        } else {
+            performDelete(id: task.id)
+        }
+    }
+
+    /// Called from the confirmation alert's destructive button (AC-04.1).
+    func confirmDelete() {
+        guard let task = taskPendingDeleteConfirmation else { return }
+        taskPendingDeleteConfirmation = nil
+        performDelete(id: task.id)
+    }
+
+    func cancelDelete() {
+        taskPendingDeleteConfirmation = nil
+    }
+
+    private func performDelete(id: UUID) {
         do {
             try repository.softDelete(id: id)
             lastDeletedTaskId = id
             loadTasks()
-            showToast(.init(message: "Task deleted.", actionLabel: "Undo", action: undoDelete))
+            showToast(ToastMessage(
+                message: "Task deleted.",
+                actionLabel: "Undo",
+                action: { [weak self] in self?.undoDelete() }
+            ))
         } catch {
             errorMessage = "Could not delete task."
         }
@@ -129,10 +185,10 @@ final class InboxViewModel {
     private func showToast(_ toast: ToastMessage) {
         toastDismissTask?.cancel()
         toastMessage = toast
-        toastDismissTask = _Concurrency.Task {
+        toastDismissTask = _Concurrency.Task { [weak self] in
             try? await _Concurrency.Task.sleep(for: .seconds(4))
             guard !_Concurrency.Task.isCancelled else { return }
-            dismissToast()
+            self?.dismissToast()
         }
     }
 
@@ -141,18 +197,19 @@ final class InboxViewModel {
         toastMessage = nil
     }
 
-    // MARK: - Maintenance
+    // MARK: - Maintenance (AC-04.4)
 
+    /// Trash auto-purge on launch. TaskRepository is @MainActor-bound so
+    /// this runs on the main actor — the operation is fast (a few row deletions).
     private func runMaintenanceTasks() {
-        _Concurrency.Task.detached(priority: .background) { [weak self] in
+        _Concurrency.Task { [weak self] in
             try? self?.repository.purgeExpiredTrash()
         }
     }
 }
 
-// MARK: - Supporting Types
+// MARK: - ToastMessage
 
-/// Data for the undo toast shown after complete/delete actions.
 struct ToastMessage: Identifiable {
     let id = UUID()
     let message: String
