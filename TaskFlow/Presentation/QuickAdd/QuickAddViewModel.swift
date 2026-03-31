@@ -47,6 +47,18 @@ final class QuickAddViewModel {
     /// True when the user has entered any content — triggers discard confirmation on dismiss.
     var isDirty: Bool { !title.isEmpty }
 
+    /// Whether the selected due date is today — used to highlight the "Today" chip (AC-02.2).
+    var isToday: Bool {
+        guard let d = dueDate else { return false }
+        return Calendar.current.isDateInToday(d)
+    }
+
+    /// Whether the selected due date is tomorrow — used to highlight the "Tomorrow" chip.
+    var isTomorrow: Bool {
+        guard let d = dueDate else { return false }
+        return Calendar.current.isDateInTomorrow(d)
+    }
+
     // MARK: - Init
 
     init(repository: TaskRepositoryProtocol) {

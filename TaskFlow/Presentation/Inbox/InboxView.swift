@@ -1,13 +1,12 @@
 // InboxView.swift
 // TaskFlow — Presentation Layer
 //
-// Root screen for MVP. Displays active and completed tasks.
-// No tab bar in MVP — this IS the app (PRD §5 MVP Navigation).
+// Root screen for MVP. No tab bar — this IS the app (PRD §5 MVP Navigation).
 //
-// Screens reachable from here:
-//   • QuickAddView  — presented as a sheet via FAB
-//   • TaskDetailView — pushed via NavigationLink on row tap
-//   • SettingsView   — presented as a sheet via gear icon
+// Reachable from here:
+//   • QuickAddView  — sheet via FAB tap  (US-01)
+//   • TaskDetailView — NavigationLink on row tap
+//   • SettingsView   — sheet via gear icon
 
 import SwiftUI
 
@@ -23,26 +22,41 @@ struct InboxView: View {
         ZStack(alignment: .bottom) {
             taskList
             fabButton
+
+            // Undo toast — sits above the FAB (AC-03.4, AC-04.3)
             if let toast = viewModel.toastMessage {
-                ToastView(toast: toast) {
-                    viewModel.dismissToast()
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .padding(.bottom, 80) // above FAB
-                .zIndex(1)
+                ToastView(toast: toast) { viewModel.dismissToast() }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.bottom, 84)
+                    .zIndex(1)
             }
         }
         .navigationTitle("Inbox")
         .navigationBarTitleDisplayMode(.large)
         .toolbar { settingsButton }
+        // Quick-Add sheet (US-01)
         .sheet(isPresented: $viewModel.isShowingQuickAdd, onDismiss: { viewModel.loadTasks() }) {
             QuickAddView(viewModel: QuickAddViewModel(repository: viewModel.repository))
         }
+        // Settings sheet
         .sheet(isPresented: $viewModel.isShowingSettings) {
             SettingsView()
         }
+        // Notes-confirmation alert before deletion (US-04 AC-04.1)
+        .alert(
+            "Delete \"\(viewModel.taskPendingDeleteConfirmation?.title ?? "")\"?",
+            isPresented: Binding(
+                get: { viewModel.taskPendingDeleteConfirmation != nil },
+                set: { if !$0 { viewModel.cancelDelete() } }
+            )
+        ) {
+            Button("Delete", role: .destructive) { viewModel.confirmDelete() }
+            Button("Cancel", role: .cancel) { viewModel.cancelDelete() }
+        } message: {
+            Text("This task has notes and will be moved to Trash.")
+        }
         .onAppear { viewModel.onAppear() }
-        .animation(.easeInOut(duration: 0.3), value: viewModel.toastMessage?.id)
+        .animation(.easeInOut(duration: 0.25), value: viewModel.toastMessage?.id)
     }
 
     // MARK: - Task List
@@ -54,30 +68,38 @@ struct InboxView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             } else {
-                // Active tasks
-                ForEach(viewModel.activeTasks) { task in
-                    NavigationLink(destination: TaskDetailView(
-                        viewModel: TaskDetailViewModel(taskId: task.id, repository: viewModel.repository)
-                    )) {
-                        TaskRowView(task: task) {
-                            viewModel.completeTask(id: task.id)
-                        }
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        completeSwipeAction(for: task)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        deleteSwipeAction(for: task)
-                    }
-                }
-
-                // Completed section
+                activeTasksSection
                 if !viewModel.completedTasks.isEmpty {
                     completedSection
                 }
             }
         }
         .listStyle(.insetGrouped)
+        .animation(.easeOut(duration: 0.3), value: viewModel.activeTasks.map { $0.id })
+    }
+
+    // MARK: - Active Tasks
+
+    @ViewBuilder
+    private var activeTasksSection: some View {
+        ForEach(viewModel.activeTasks) { task in
+            NavigationLink(destination: taskDetailDestination(for: task)) {
+                TaskRowView(
+                    task: task,
+                    isPendingCompletion: viewModel.pendingCompletionIds.contains(task.id)
+                ) {
+                    viewModel.completeTask(id: task.id)
+                }
+            }
+            // Swipe right → Complete (AC-03.1)
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                completeSwipeAction(for: task)
+            }
+            // Swipe left → Delete (AC-04.1)
+            .swipeActions(edge: .trailing, allowsFullSwipe: !task.hasNotes) {
+                deleteSwipeAction(for: task)
+            }
+        }
     }
 
     // MARK: - Completed Section (AC-03.3)
@@ -86,11 +108,9 @@ struct InboxView: View {
         Section {
             if viewModel.isCompletedSectionExpanded {
                 ForEach(viewModel.completedTasks) { task in
-                    NavigationLink(destination: TaskDetailView(
-                        viewModel: TaskDetailViewModel(taskId: task.id, repository: viewModel.repository)
-                    )) {
-                        TaskRowView(task: task) {
-                            viewModel.completeTask(id: task.id)
+                    NavigationLink(destination: taskDetailDestination(for: task)) {
+                        TaskRowView(task: task, isPendingCompletion: false) {
+                            viewModel.completeTask(id: task.id) // uncomplete (AC-03.5)
                         }
                     }
                 }
@@ -125,9 +145,11 @@ struct InboxView: View {
         .tint(.green)
     }
 
+    @ViewBuilder
     private func deleteSwipeAction(for task: TaskItem) -> some View {
         Button(role: .destructive) {
-            viewModel.deleteTask(id: task.id)
+            // requestDelete checks for notes and routes to confirmation if needed (AC-04.1)
+            viewModel.requestDelete(task: task)
         } label: {
             Label("Delete", systemImage: "trash.fill")
         }
@@ -138,14 +160,15 @@ struct InboxView: View {
     private var fabButton: some View {
         Button {
             viewModel.isShowingQuickAdd = true
+            HapticManager.impact(.light)
         } label: {
             Image(systemName: "plus")
-                .font(.title2.weight(.semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 56, height: 56)
                 .background(Color.accentColor)
                 .clipShape(Circle())
-                .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 3)
         }
         .accessibilityLabel("Add new task")
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -177,7 +200,6 @@ struct InboxView: View {
 
             Text("Your Inbox is empty")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
 
             Text("Tap + to add your first task")
                 .font(.subheadline)
@@ -187,17 +209,24 @@ struct InboxView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 80)
     }
+
+    // MARK: - Helpers
+
+    private func taskDetailDestination(for task: TaskItem) -> TaskDetailView {
+        TaskDetailView(
+            viewModel: TaskDetailViewModel(
+                taskId: task.id,
+                repository: viewModel.repository
+            )
+        )
+    }
 }
 
 // MARK: - Preview
 
 #Preview {
     NavigationStack {
-        InboxView(
-            viewModel: InboxViewModel(
-                repository: PreviewTaskRepository()
-            )
-        )
+        InboxView(viewModel: InboxViewModel(repository: PreviewTaskRepository()))
     }
     .modelContainer(for: TaskItem.self, inMemory: true)
 }

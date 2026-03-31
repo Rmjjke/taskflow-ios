@@ -50,11 +50,12 @@ struct CheckboxView: View {
     // MARK: - Interaction
 
     private func handleTap() {
-        // Spring scale pulse on interaction
+        // Spring scale pulse — Swift 6 safe via structured Task (AC-03.2)
         withAnimation(.spring(response: 0.15, dampingFraction: 0.6)) {
             isAnimating = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
             withAnimation { isAnimating = false }
         }
         onTap()

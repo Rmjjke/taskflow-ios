@@ -1,9 +1,9 @@
 // SettingsView.swift
 // TaskFlow — Presentation Layer
 //
-// Settings screen. MVP exposes Trash access only.
-// Additional settings (Notifications, Appearance, Subscription, etc.) added in v1.0.
-// PRD §10 — Settings navigation structure.
+// Settings root screen.
+// MVP exposes Trash with a live item-count badge (AC-04.5).
+// v1.0 settings rows are shown as disabled placeholders.
 
 import SwiftUI
 import SwiftData
@@ -15,49 +15,55 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    // MARK: - Live Trash Count (AC-04.5)
+    // @Query fetches only soft-deleted items so the badge stays in sync
+    // automatically whenever the trash changes — no manual refresh needed.
+    @Query(filter: #Predicate<TaskItem> { $0.isDeleted == true })
+    private var trashedItems: [TaskItem]
+
+    private var trashCount: Int { trashedItems.count }
+
     // MARK: - Body
 
     var body: some View {
         NavigationStack {
             List {
+
                 // MARK: Data
                 Section("Data") {
                     NavigationLink(destination: trashDestination) {
-                        Label("Trash", systemImage: "trash")
+                        HStack {
+                            Label("Trash", systemImage: "trash")
+                            Spacer()
+                            // Badge (AC-04.5) — visible only when trash has items
+                            if trashCount > 0 {
+                                Text("\(trashCount)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary)
+                                    .clipShape(Capsule())
+                            }
+                        }
                     }
                 }
 
                 // MARK: Coming in v1.0 (disabled placeholders)
                 Section("Coming in v1.0") {
-                    Label("Account & Sync", systemImage: "icloud")
-                        .foregroundStyle(.secondary)
-                    Label("Notifications", systemImage: "bell")
-                        .foregroundStyle(.secondary)
-                    Label("Appearance", systemImage: "paintpalette")
-                        .foregroundStyle(.secondary)
-                    Label("TaskFlow Pro", systemImage: "star.circle")
-                        .foregroundStyle(.secondary)
-                    Label("Siri & Shortcuts", systemImage: "mic")
-                        .foregroundStyle(.secondary)
+                    disabledRow(label: "Account & Sync",   icon: "icloud")
+                    disabledRow(label: "Notifications",    icon: "bell")
+                    disabledRow(label: "Appearance",       icon: "paintpalette")
+                    disabledRow(label: "TaskFlow Pro",     icon: "star.circle")
+                    disabledRow(label: "Siri & Shortcuts", icon: "mic")
+                    disabledRow(label: "Privacy",          icon: "hand.raised")
                 }
                 .disabled(true)
 
                 // MARK: About
-                Section {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text(Bundle.main.appVersion)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Text("Build")
-                        Spacer()
-                        Text(Bundle.main.buildNumber)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("About")
+                Section("About") {
+                    versionRow("Version", value: Bundle.main.appVersion)
+                    versionRow("Build",   value: Bundle.main.buildNumber)
                 }
             }
             .listStyle(.insetGrouped)
@@ -75,6 +81,21 @@ struct SettingsView: View {
 
     private var trashDestination: some View {
         TrashView(viewModel: TrashViewModel(repository: TaskRepository(modelContext: modelContext)))
+    }
+
+    // MARK: - Row Helpers
+
+    private func disabledRow(label: String, icon: String) -> some View {
+        Label(label, systemImage: icon)
+            .foregroundStyle(.secondary)
+    }
+
+    private func versionRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
+        }
     }
 }
 
