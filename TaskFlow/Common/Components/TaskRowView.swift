@@ -44,17 +44,30 @@ struct TaskRowView: View {
                     }
                 }
 
-                // Due date badge
-                if let dueDate = task.dueDate {
+                // Due date / time badge
+                // Rules per spec AC-M2.3 / AC-M5.4:
+                //   Overdue   → date in red + exclamation icon
+                //   Has time  → show time (e.g. "9:00 AM") in secondary color
+                //   Future date, no time → show date label (e.g. "Tomorrow")
+                //   Today, no time → nothing (context is implied by the Today tab)
+                //   No date  → nothing
+                if task.isOverdue, let dueDate = task.dueDate {
                     Label {
                         Text(dueDate.taskDueDateLabel)
                     } icon: {
-                        if task.isOverdue {
-                            Image(systemName: "exclamationmark.circle")
-                        }
+                        Image(systemName: "exclamationmark.circle")
                     }
                     .font(.caption)
-                    .foregroundStyle(task.isOverdue ? .red : .secondary)
+                    .foregroundStyle(.red)
+                } else if let dueTime = task.dueTime {
+                    Text(dueTime, style: .time)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let dueDate = task.dueDate,
+                          !Calendar.current.isDateInToday(dueDate) {
+                    Text(dueDate.taskDueDateLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

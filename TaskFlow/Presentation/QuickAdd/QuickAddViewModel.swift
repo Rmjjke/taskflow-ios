@@ -15,6 +15,9 @@ final class QuickAddViewModel {
 
     let repository: TaskRepositoryProtocol
 
+    /// Speech-to-text service for the dictation mic button.
+    let speech = SpeechRecognitionService()
+
     // MARK: - Input State
 
     var title: String = ""
@@ -35,6 +38,9 @@ final class QuickAddViewModel {
     /// Set to `true` by the view when the user dismisses with unsaved content,
     /// to trigger the "Discard task?" confirmation (AC-01.4).
     var showDiscardConfirmation: Bool = false
+
+    /// Shown when microphone/speech permission is denied — prompts user to open Settings.
+    var showMicPermissionAlert: Bool = false
 
     /// Error surfaced to the view.
     var errorMessage: String? = nil
@@ -104,5 +110,38 @@ final class QuickAddViewModel {
         dueTime = nil
         hasTime = false
         isDatePickerExpanded = false
+    }
+
+    // MARK: - Dictation
+
+    /// Toggles speech recognition on/off.
+    /// Requests permission on first use; shows alert when denied.
+    func toggleDictation() {
+        if speech.isRecording {
+            speech.stopRecording()
+            return
+        }
+
+        switch speech.permissionStatus {
+        case .authorized:
+            startDictation()
+        case .notDetermined:
+            Task { [weak self] in
+                await self?.speech.requestPermission()
+                if self?.speech.isPermitted == true {
+                    self?.startDictation()
+                }
+            }
+        default:
+            // .denied or .restricted — direct user to Settings
+            showMicPermissionAlert = true
+        }
+    }
+
+    private func startDictation() {
+        try? speech.startRecording { [weak self] transcription in
+            // Replace title with live transcription as user speaks
+            self?.title = transcription
+        }
     }
 }
