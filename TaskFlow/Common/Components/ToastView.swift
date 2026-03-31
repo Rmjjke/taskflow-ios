@@ -26,15 +26,18 @@ struct ToastView: View {
 
             Spacer()
 
-            Button(toast.actionLabel) {
-                toast.action()
+            // Action button only rendered when a label is provided (e.g. hidden for "Task reopened.")
+            if !toast.actionLabel.isEmpty {
+                Button(toast.actionLabel) {
+                    toast.action()
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.white.opacity(0.2))
+                .clipShape(Capsule())
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.white.opacity(0.2))
-            .clipShape(Capsule())
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
